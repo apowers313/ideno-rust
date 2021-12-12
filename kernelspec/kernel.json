@@ -1,0 +1,8 @@
+{
+    "argv": [
+        "/Users/ampower/Projects/personal/ideno-rust/target/debug/ideno-rust",
+        "{connection_file}"
+    ],
+    "display_name": "Rusty IDeno",
+    "language": "typescript"
+}

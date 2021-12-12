@@ -1,0 +1,12 @@
+{
+    "shell_port": 56547,
+    "iopub_port": 56548,
+    "stdin_port": 56549,
+    "control_port": 56551,
+    "hb_port": 56550,
+    "ip": "127.0.0.1",
+    "key": "1f5cec86-8eaa942eef7f5a35b51ddcf5",
+    "transport": "tcp",
+    "signature_scheme": "hmac-sha256",
+    "kernel_name": "deno"
+}
