@@ -1,11 +1,13 @@
 // jupyter kernelspec install --name=rusty kernelspec
 
 use serde::{Deserialize, Serialize};
+// use serde_json::Value;
 use std::env;
 use std::error::Error;
 use std::fs;
 use tokio::join;
 use zeromq::prelude::*;
+use zeromq::ZmqMessage;
 
 #[derive(Serialize, Deserialize)]
 struct ConnectionSpec {
@@ -30,6 +32,7 @@ async fn main() {
         std::process::exit(1);
     }
 
+    // create connection strings from connection file
     let conn_spec: ConnectionSpec = read_conn_spec(&args[1]);
     let shell_conn_str =
         create_conn_str(&conn_spec.transport, &conn_spec.ip, &conn_spec.shell_port);
@@ -41,6 +44,7 @@ async fn main() {
         create_conn_str(&conn_spec.transport, &conn_spec.ip, &conn_spec.stdin_port);
     let hb_conn_str = create_conn_str(&conn_spec.transport, &conn_spec.ip, &conn_spec.hb_port);
 
+    // create zmq sockets
     let (_first, _second, _third, _fourth, _fifth) = join!(
         create_zmq_dealer(String::from("shell"), &shell_conn_str),
         create_zmq_dealer(String::from("control"), &control_conn_str),
@@ -78,9 +82,11 @@ async fn create_zmq_dealer(name: String, conn_str: &String) -> Result<(), Box<dy
 
     // TODO(apowers313) pop this out into it's own function: we need to send on sock, as well as receive
     loop {
-        let msg = sock.recv().await?;
-        dbg!(&msg);
+        let data = sock.recv().await?;
+        dbg!(&data);
         println!("{} got packet!", name);
+        println!("size is: {}", data.len());
+        parse_zmq_packet(&data)?;
     }
 }
 
@@ -111,3 +117,47 @@ async fn create_zmq_reply(name: String, conn_str: &String) -> Result<(), Box<dyn
         println!("{} got packet!", name);
     }
 }
+
+fn parse_zmq_packet(data: &ZmqMessage) -> Result<(), Box<dyn Error>> {
+    let _delim = data.get(0);
+    let _hmac = data.get(1);
+    let header = data.get(2).unwrap();
+    let _parent_header = data.get(3);
+    let _metadata = data.get(4);
+    let _content = data.get(5);
+
+    println!("header:");
+    dbg!(header);
+    let header_str = std::str::from_utf8(&header).unwrap();
+    let header_value: MessageHeader = serde_json::from_str(header_str).unwrap();
+    println!("header_value");
+    dbg!(&header_value);
+    // validate_header(&header_value)?;
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MessageHeader {
+    msg_id: String,
+    session: String,
+    username: String,
+    date: String,
+    msg_type: String,
+    version: String,
+}
+
+// fn validate_header(header_value: &Value) -> Result<MessageHeader, Box<dyn Error>> {
+//     dbg!(header_value);
+//     let msg_id = header_value["msg_id"].as_str().ok_or("bad msg_id")?;
+//     let session = header_value["session"].as_str().ok_or("bad msg_id")?;
+//     let username = header_value["username"].as_str().ok_or("bad msg_id")?;
+//     let date = header_value["date"].as_str().ok_or("bad msg_id")?;
+//     let msg_type = header_value["msg_type"].as_str().ok_or("bad msg_id")?;
+//     let version = header_value["version"].as_str().ok_or("bad msg_id")?;
+
+//     let parsed_header = MessageHeader {
+//         msg_id: String::from(msg_id),
+//     };
+//     Ok(parsed_header)
+// }
