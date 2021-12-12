@@ -36,20 +36,22 @@ async fn main() {
     }
 
     let conn_spec: ConnectionSpec = read_conn_spec(&args[1]);
+    let shell_conn_str =
+        create_conn_str(&conn_spec.transport, &conn_spec.ip, &conn_spec.shell_port);
+    let control_conn_str =
+        create_conn_str(&conn_spec.transport, &conn_spec.ip, &conn_spec.control_port);
+    let iopub_conn_str =
+        create_conn_str(&conn_spec.transport, &conn_spec.ip, &conn_spec.iopub_port);
+    let stdin_conn_str =
+        create_conn_str(&conn_spec.transport, &conn_spec.ip, &conn_spec.stdin_port);
+    let hb_conn_str = create_conn_str(&conn_spec.transport, &conn_spec.ip, &conn_spec.hb_port);
 
-    let (_first, _second) = join!(
-        create_zmq_dealer(
-            String::from("shell"),
-            &conn_spec.transport,
-            &conn_spec.ip,
-            &conn_spec.shell_port,
-        ),
-        create_zmq_dealer(
-            String::from("control"),
-            &conn_spec.transport,
-            &conn_spec.ip,
-            &conn_spec.control_port,
-        )
+    let (_first, _second, _third, _fourth, _fifth) = join!(
+        create_zmq_dealer(String::from("shell"), &shell_conn_str),
+        create_zmq_dealer(String::from("control"), &control_conn_str),
+        create_zmq_publisher(String::from("iopub"), &iopub_conn_str),
+        create_zmq_dealer(String::from("stdin"), &stdin_conn_str),
+        create_zmq_reply(String::from("hb"), &hb_conn_str),
     );
     // let shell_sock = create_zmq_dealer(shell_conn_str);
 
@@ -77,26 +79,56 @@ fn read_conn_spec(path: &String) -> ConnectionSpec {
 
 // async fn create_zmq_dealer(conn_str: String) -> Result<zeromq::DealerSocket, Box<dyn Error>> {
 
-async fn create_zmq_dealer(
-    name: String,
-    transport: &String,
-    ip: &String,
-    port: &u32,
-) -> Result<(), Box<dyn Error>> {
+fn create_conn_str(transport: &String, ip: &String, port: &u32) -> String {
     let conn_str: String = format!("{}://{}:{}", transport, ip, port,);
-    println!("{} connection string: {}", name, conn_str);
+    return conn_str;
+}
 
-    let mut shell_sock = zeromq::DealerSocket::new();
-    shell_sock.monitor();
-    shell_sock.bind(&conn_str).await?;
+async fn create_zmq_dealer(name: String, conn_str: &String) -> Result<(), Box<dyn Error>> {
+    println!("dealer '{}' connection string: {}", name, conn_str);
 
+    let mut sock = zeromq::DealerSocket::new();
+    sock.monitor();
+    sock.bind(&conn_str).await?;
+
+    // TODO(apowers313) pop this out into it's own function: we need to send on sock, as well as receive
     loop {
-        let mut repl: String = shell_sock.recv().await?.try_into()?;
-        dbg!(&repl);
-        repl.push_str(" Reply");
-        shell_sock.send(repl.into()).await?;
+        // let repl: String = sock.recv().await?.try_into()?;
+        let msg = sock.recv().await?;
+        dbg!(&msg);
+        println!("{} got packet!", name);
+        // repl.push_str(" Reply");
+        // sock.send(repl.into()).await?;
     }
 }
 
-// TODO: connect zmq to ports in JSON file
-// TODO: parse packet
+async fn create_zmq_publisher(
+    name: String,
+    conn_str: &String,
+) -> Result<zeromq::PubSocket, Box<dyn Error>> {
+    println!("iopub {} connection string: {}", name, conn_str);
+
+    let mut sock = zeromq::PubSocket::new();
+    sock.bind(&conn_str).await?;
+
+    // no loop, only used for broadcasting status to Jupyter frontends
+
+    Ok(sock)
+}
+
+async fn create_zmq_reply(name: String, conn_str: &String) -> Result<(), Box<dyn Error>> {
+    println!("reply '{}' connection string: {}", name, conn_str);
+
+    let mut sock = zeromq::RepSocket::new(); // TODO(apowers313) exact same as dealer, refactor
+    sock.monitor();
+    sock.bind(&conn_str).await?;
+
+    loop {
+        // let repl: String = sock.recv().await?.try_into()?;
+        let msg = sock.recv().await?;
+        dbg!(&msg);
+        println!("{} got packet!", name);
+        // repl.push_str(" Reply");
+        // sock.send(repl.into()).await?;
+    }
+}
