@@ -2,12 +2,24 @@
 
 use serde::{Deserialize, Serialize};
 // use serde_json::Value;
+use data_encoding::HEXLOWER;
+use ring::hmac;
 use std::env;
 use std::error::Error;
 use std::fs;
 use tokio::join;
 use zeromq::prelude::*;
 use zeromq::ZmqMessage;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MessageHeader {
+    msg_id: String,
+    session: String,
+    username: String,
+    date: String,
+    msg_type: String,
+    version: String,
+}
 
 #[derive(Serialize, Deserialize)]
 struct ConnectionSpec {
@@ -126,38 +138,122 @@ fn parse_zmq_packet(data: &ZmqMessage) -> Result<(), Box<dyn Error>> {
     let _metadata = data.get(4);
     let _content = data.get(5);
 
-    println!("header:");
     dbg!(header);
     let header_str = std::str::from_utf8(&header).unwrap();
     let header_value: MessageHeader = serde_json::from_str(header_str).unwrap();
-    println!("header_value");
     dbg!(&header_value);
     // validate_header(&header_value)?;
 
     Ok(())
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct MessageHeader {
-    msg_id: String,
-    session: String,
-    username: String,
-    date: String,
-    msg_type: String,
-    version: String,
+#[allow(dead_code)]
+fn hmac_sign(zmq: &ZmqMessage, key: hmac::Key) -> String {
+    let mut hmac_ctx = hmac::Context::with_key(&key);
+    hmac_ctx.update(zmq.get(2).unwrap()); // header
+    hmac_ctx.update(zmq.get(3).unwrap()); // parent header
+    hmac_ctx.update(zmq.get(4).unwrap()); // metadata
+    hmac_ctx.update(zmq.get(5).unwrap()); // content
+    let tag = hmac_ctx.sign();
+    dbg!(tag);
+    let sig = HEXLOWER.encode(tag.as_ref());
+
+    return sig;
 }
 
-// fn validate_header(header_value: &Value) -> Result<MessageHeader, Box<dyn Error>> {
-//     dbg!(header_value);
-//     let msg_id = header_value["msg_id"].as_str().ok_or("bad msg_id")?;
-//     let session = header_value["session"].as_str().ok_or("bad msg_id")?;
-//     let username = header_value["username"].as_str().ok_or("bad msg_id")?;
-//     let date = header_value["date"].as_str().ok_or("bad msg_id")?;
-//     let msg_type = header_value["msg_type"].as_str().ok_or("bad msg_id")?;
-//     let version = header_value["version"].as_str().ok_or("bad msg_id")?;
+#[allow(dead_code)]
+fn hmac_verify(
+    zmq: &ZmqMessage,
+    key: hmac::Key,
+    sig: String,
+) -> Result<(), ring::error::Unspecified> {
+    dbg!(&zmq);
+    let mut msg = Vec::<u8>::new();
+    msg.extend(zmq.get(2).unwrap()); // header
+    msg.extend(zmq.get(3).unwrap()); // parent header
+    msg.extend(zmq.get(4).unwrap()); // metadata
+    msg.extend(zmq.get(5).unwrap()); // content
+    hmac::verify(&key, &msg.as_ref(), sig.as_ref())?;
 
-//     let parsed_header = MessageHeader {
-//         msg_id: String::from(msg_id),
-//     };
-//     Ok(parsed_header)
-// }
+    Ok(())
+}
+
+#[test]
+fn hmac_verify_test() {
+    let key_value = "1f5cec86-8eaa942eef7f5a35b51ddcf5";
+    let key = hmac::Key::new(hmac::HMAC_SHA256, key_value.as_ref());
+
+    let delim = "<IDS|MSG>".as_bytes().to_vec();
+    let hash = "43a5c45062e0b6bcc59c727f90165ad1d2eb02e1c5317aa25c2c2049d96d3b6a"
+        .as_bytes()
+        .to_vec();
+    let header = "{\"msg_id\":\"c0fd20872c1b4d1c87e7fc814b75c93e_0\",\"msg_type\":\"kernel_info_request\",\"username\":\"ampower\",\"session\":\"c0fd20872c1b4d1c87e7fc814b75c93e\",\"date\":\"2021-12-10T06:20:40.259695Z\",\"version\":\"5.3\"}".as_bytes().to_vec();
+    let parent_header = "{}".as_bytes().to_vec();
+    let metadata = "{}".as_bytes().to_vec();
+    let content = "{}".as_bytes().to_vec();
+
+    let mut test_msg = ZmqMessage::from(delim);
+    test_msg.push_back(hash.into());
+    test_msg.push_back(header.into());
+    test_msg.push_back(parent_header.into());
+    test_msg.push_back(metadata.into());
+    test_msg.push_back(content.into());
+
+    dbg!(test_msg.clone());
+    match hmac_verify(
+        &test_msg,
+        key,
+        String::from("43a5c45062e0b6bcc59c727f90165ad1d2eb02e1c5317aa25c2c2049d96d3b6a"),
+    ) {
+        Ok(_) => assert!(true),
+        Err(_) => assert!(false, "signature validation failed"),
+    }
+}
+
+#[test]
+fn hmac_sign_test() {
+    let key_value = "1f5cec86-8eaa942eef7f5a35b51ddcf5";
+    let key = hmac::Key::new(hmac::HMAC_SHA256, key_value.as_ref());
+
+    let delim = "<IDS|MSG>";
+    let hash = "43a5c45062e0b6bcc59c727f90165ad1d2eb02e1c5317aa25c2c2049d96d3b6a"
+        .as_bytes()
+        .to_vec();
+    let header = "{\"msg_id\":\"c0fd20872c1b4d1c87e7fc814b75c93e_0\",\"msg_type\":\"kernel_info_request\",\"username\":\"ampower\",\"session\":\"c0fd20872c1b4d1c87e7fc814b75c93e\",\"date\":\"2021-12-10T06:20:40.259695Z\",\"version\":\"5.3\"}".as_bytes().to_vec();
+    let parent_header = "{}".as_bytes().to_vec();
+    let metadata = "{}".as_bytes().to_vec();
+    let content = "{}".as_bytes().to_vec();
+
+    let mut test_msg = ZmqMessage::from(delim);
+    test_msg.push_back(hash.into());
+    test_msg.push_back(header.into());
+    test_msg.push_back(parent_header.into());
+    test_msg.push_back(metadata.into());
+    test_msg.push_back(content.into());
+
+    dbg!(test_msg.clone());
+    let sig = hmac_sign(&test_msg, key);
+    println!("Signature: {}", sig);
+    assert_eq!(
+        sig,
+        "43a5c45062e0b6bcc59c727f90165ad1d2eb02e1c5317aa25c2c2049d96d3b6a"
+    );
+}
+
+#[test]
+fn send_test() {
+    let now = std::time::SystemTime::now();
+    let now: chrono::DateTime<chrono::Utc> = now.into();
+    let now = now.to_rfc3339();
+    #[allow(unused_variables)]
+    let header_struct = MessageHeader {
+        msg_id: uuid::Uuid::new_v4().to_string(),
+        session: uuid::Uuid::new_v4().to_string(),
+        // FIXME:
+        username: "<TODO>".to_string(),
+        date: now.to_string(),
+        msg_type: "status".to_string(),
+        // TODO: this should be taken from a global,
+        version: "5.3".to_string(),
+    };
+}
